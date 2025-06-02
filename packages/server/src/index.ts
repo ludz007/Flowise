@@ -35,6 +35,11 @@ import { Organization } from './enterprise/database/entities/organization.entity
 import { GeneralRole, Role } from './enterprise/database/entities/role.entity'
 import { migrateApiKeysFromJsonToDb } from './utils/apiKey'
 
+// ─── NEW IMPORTS FOR STRIPE, POSTGRES, BCRYPT ─────────────────────────────────
+import Stripe from 'stripe'
+import { Pool } from 'pg'
+import bcrypt from 'bcrypt'
+
 declare global {
     namespace Express {
         interface User extends LoggedInUser {}
@@ -72,6 +77,10 @@ export class App {
     queueManager: QueueManager
     redisSubscriber: RedisEventSubscriber
     usageCacheManager: UsageCacheManager
+
+    // ─── NEW PROPERTIES FOR STRIPE & PG ─────────────────────────────────────────
+    stripe!: Stripe
+    db!: Pool
 
     constructor() {
         this.app = express()
@@ -158,6 +167,13 @@ export class App {
         this.app.use(express.json({ limit: flowise_file_size_limit }))
         this.app.use(express.urlencoded({ limit: flowise_file_size_limit, extended: true }))
 
+        // ─── INITIALIZE STRIPE & POSTGRES CLIENTS ────────────────────────────────
+        this.stripe = new Stripe(process.env.STRIPE_SECRET_KEY!)
+        this.db = new Pool({
+            connectionString: process.env.DATABASE_URL,
+            ssl: { rejectUnauthorized: false }
+        })
+
         // Enhanced trust proxy settings for load balancer
         this.app.set('trust proxy', true) // Trust all proxies
 
@@ -202,7 +218,7 @@ export class App {
         this.app.use(async (req, res, next) => {
             // Step 1: Check if the req path contains /api/v1 regardless of case
             if (URL_CASE_INSENSITIVE_REGEX.test(req.path)) {
-                // Step 2: Check if the req path is casesensitive
+                // Step 2: Check if the req path is case‐sensitive
                 if (URL_CASE_SENSITIVE_REGEX.test(req.path)) {
                     // Step 3: Check if the req path is in the whitelist
                     const isWhitelisted = whitelistURLs.some((url) => req.path.startsWith(url))
@@ -304,6 +320,143 @@ export class App {
             }
         }
 
+        // ─── CUSTOM SIGNUP & WEBHOOK ROUTES ─────────────────────────────────────
+        /**
+         * POST /api/signup
+         * Body: { email, password }
+         */
+        this.app.post('/api/signup', async (req, res) => {
+            const { email, password } = req.body
+            if (!email || !password) {
+                return res.status(400).json({ error: 'Email and password are required.' })
+            }
+
+            try {
+                // 1) Create Stripe Customer
+                const customer = await this.stripe.customers.create({ email })
+
+                // 2) Create Subscription on your PRICE ID
+                const subscription = await this.stripe.subscriptions.create({
+                    customer: customer.id,
+                    items: [{ price: process.env.STRIPE_PRICE_ID! }]
+                })
+
+                // 3) Hash the user’s password
+                const hashedPassword = await bcrypt.hash(password, 10)
+
+                // 4) Insert new tenant (status = 'pending')
+                const insertTenantSQL = `
+                    INSERT INTO tenants (email, stripe_customer_id, stripe_subscription_id, status)
+                    VALUES ($1, $2, $3, 'pending')
+                    RETURNING tenant_id
+                `
+                const tenantResult = await this.db.query(insertTenantSQL, [
+                    email,
+                    customer.id,
+                    subscription.id
+                ])
+                const newTenantId = tenantResult.rows[0].tenant_id
+
+                // 5) Insert new user (role = 'owner')
+                const insertUserSQL = `
+                    INSERT INTO users (tenant_id, hashed_password, role)
+                    VALUES ($1, $2, 'owner')
+                    RETURNING user_id
+                `
+                const userResult = await this.db.query(insertUserSQL, [
+                    newTenantId,
+                    hashedPassword
+                ])
+                const newUserId = userResult.rows[0].user_id
+
+                return res.json({
+                    message: 'Signup successful. Your account is pending activation until payment completes.',
+                    tenantId: newTenantId,
+                    userId: newUserId
+                })
+            } catch (err) {
+                console.error('Error in /api/signup:', err)
+                return res.status(500).json({ error: 'Internal server error during signup.' })
+            }
+        })
+
+        /**
+         * POST /api/stripe/webhook
+         */
+        this.app.post(
+            '/api/stripe/webhook',
+            express.raw({ type: 'application/json' }),
+            async (req, res) => {
+                const sig = req.headers['stripe-signature']!
+                let event
+
+                try {
+                    event = this.stripe.webhooks.constructEvent(
+                        req.body,
+                        sig,
+                        process.env.STRIPE_WEBHOOK_SECRET!
+                    )
+                } catch (err: any) {
+                    console.error('⚠️  Webhook signature verification failed:', err.message)
+                    return res.status(400).send(`Webhook Error: ${err.message}`)
+                }
+
+                switch (event.type) {
+                    case 'invoice.paid': {
+                        const invoice = event.data.object as Stripe.Invoice
+                        await this.db.query(
+                            `UPDATE tenants SET status = 'active' WHERE stripe_subscription_id = $1`,
+                            [invoice.subscription]
+                        )
+                        break
+                    }
+                    case 'customer.subscription.deleted': {
+                        const subscription = event.data.object as Stripe.Subscription
+                        await this.db.query(
+                            `UPDATE tenants SET status = 'canceled' WHERE stripe_subscription_id = $1`,
+                            [subscription.id]
+                        )
+                        break
+                    }
+                    // Add more cases if needed
+                    default:
+                        break
+                }
+
+                res.json({ received: true })
+            }
+        )
+
+        // ─── MIDDLEWARE TO BLOCK NON-ACTIVE TENANTS ─────────────────────────────
+        async function checkTenantActive(req: Request, res: Response, next: express.NextFunction) {
+            // Flowise sets (req as any).session.userId upon successful login
+            const userId = (req as any).session?.userId
+            if (!userId) {
+                return next() // Not logged in yet
+            }
+
+            try {
+                const { rows } = await (req.app as any).db.query(
+                    `SELECT t.status
+                     FROM tenants t
+                     JOIN users u ON u.tenant_id = t.tenant_id
+                     WHERE u.user_id = $1`,
+                    [userId]
+                )
+                if (!rows.length || rows[0].status !== 'active') {
+                    return res.status(403).send('Your subscription is not active.')
+                }
+                next()
+            } catch (err) {
+                console.error('checkTenantActive error:', err)
+                return res.status(500).send('Internal server error.')
+            }
+        }
+
+        // Register the middleware BEFORE mounting the v1 API or serving UI
+        this.app.use(checkTenantActive)
+
+        // ─── EXISTING FLOWISE v1 API ROUTES ──────────────────────────────────────
         this.app.use('/api/v1', flowiseApiV1Router)
 
         // ----------------------------------------
