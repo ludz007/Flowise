@@ -65,18 +65,18 @@ declare global {
 
 export class App {
     app: express.Application
-    nodesPool: NodesPool
-    abortControllerPool: AbortControllerPool
-    cachePool: CachePool
-    telemetry: Telemetry
-    rateLimiterManager: RateLimiterManager
+    nodesPool!: NodesPool
+    abortControllerPool!: AbortControllerPool
+    cachePool!: CachePool
+    telemetry!: Telemetry
+    rateLimiterManager!: RateLimiterManager
     AppDataSource: DataSource = getDataSource()
-    sseStreamer: SSEStreamer
-    identityManager: IdentityManager
-    metricsProvider: IMetricsProvider
-    queueManager: QueueManager
-    redisSubscriber: RedisEventSubscriber
-    usageCacheManager: UsageCacheManager
+    sseStreamer!: SSEStreamer
+    identityManager!: IdentityManager
+    metricsProvider!: IMetricsProvider
+    queueManager!: QueueManager
+    redisSubscriber!: RedisEventSubscriber
+    usageCacheManager!: UsageCacheManager
 
     // ─── NEW PROPERTIES FOR STRIPE & PG ─────────────────────────────────────────
     stripe!: Stripe
@@ -84,6 +84,8 @@ export class App {
 
     constructor() {
         this.app = express()
+        // Ensure Winston does not exit the process on error
+        logger.exitOnError = false
     }
 
     async initDatabase() {
@@ -115,7 +117,9 @@ export class App {
 
             // Initialize Rate Limit
             this.rateLimiterManager = RateLimiterManager.getInstance()
-            await this.rateLimiterManager.initializeRateLimiters(await getDataSource().getRepository(ChatFlow).find())
+            await this.rateLimiterManager.initializeRateLimiters(
+                await getDataSource().getRepository(ChatFlow).find()
+            )
             logger.info('🚦 [server]: Rate limiters initialized successfully')
 
             // Initialize cache pool
@@ -153,7 +157,10 @@ export class App {
             }
 
             // TODO: Remove this by end of 2025
-            await migrateApiKeysFromJsonToDb(this.AppDataSource, this.identityManager.getPlatformType())
+            await migrateApiKeysFromJsonToDb(
+                this.AppDataSource,
+                this.identityManager.getPlatformType()
+            )
 
             logger.info('🎉 [server]: All initialization steps completed successfully!')
         } catch (error) {
@@ -221,56 +228,87 @@ export class App {
                 // Step 2: Check if the req path is case‐sensitive
                 if (URL_CASE_SENSITIVE_REGEX.test(req.path)) {
                     // Step 3: Check if the req path is in the whitelist
-                    const isWhitelisted = whitelistURLs.some((url) => req.path.startsWith(url))
+                    const isWhitelisted = whitelistURLs.some((url) =>
+                        req.path.startsWith(url)
+                    )
                     if (isWhitelisted) {
                         next()
                     } else if (req.headers['x-request-from'] === 'internal') {
                         verifyToken(req, res, next)
                     } else {
                         // Only check license validity for non-open-source platforms
-                        if (this.identityManager.getPlatformType() !== Platform.OPEN_SOURCE) {
+                        if (
+                            this.identityManager.getPlatformType() !==
+                            Platform.OPEN_SOURCE
+                        ) {
                             if (!this.identityManager.isLicenseValid()) {
-                                return res.status(401).json({ error: 'Unauthorized Access' })
+                                return res
+                                    .status(401)
+                                    .json({ error: 'Unauthorized Access' })
                             }
                         }
                         const isKeyValidated = await validateAPIKey(req)
                         if (!isKeyValidated) {
-                            return res.status(401).json({ error: 'Unauthorized Access' })
+                            return res
+                                .status(401)
+                                .json({ error: 'Unauthorized Access' })
                         }
                         const apiKeyWorkSpaceId = await getAPIKeyWorkspaceID(req)
                         if (apiKeyWorkSpaceId) {
                             // Find workspace
-                            const workspace = await this.AppDataSource.getRepository(Workspace).findOne({
+                            const workspace = await this.AppDataSource.getRepository(
+                                Workspace
+                            ).findOne({
                                 where: { id: apiKeyWorkSpaceId }
                             })
                             if (!workspace) {
-                                return res.status(401).json({ error: 'Unauthorized Access' })
+                                return res
+                                    .status(401)
+                                    .json({ error: 'Unauthorized Access' })
                             }
 
                             // Find owner role
-                            const ownerRole = await this.AppDataSource.getRepository(Role).findOne({
-                                where: { name: GeneralRole.OWNER, organizationId: IsNull() }
+                            const ownerRole = await this.AppDataSource.getRepository(
+                                Role
+                            ).findOne({
+                                where: {
+                                    name: GeneralRole.OWNER,
+                                    organizationId: IsNull()
+                                }
                             })
                             if (!ownerRole) {
-                                return res.status(401).json({ error: 'Unauthorized Access' })
+                                return res
+                                    .status(401)
+                                    .json({ error: 'Unauthorized Access' })
                             }
 
                             // Find organization
                             const activeOrganizationId = workspace.organizationId as string
-                            const org = await this.AppDataSource.getRepository(Organization).findOne({
+                            const org = await this.AppDataSource.getRepository(
+                                Organization
+                            ).findOne({
                                 where: { id: activeOrganizationId }
                             })
                             if (!org) {
-                                return res.status(401).json({ error: 'Unauthorized Access' })
+                                return res
+                                    .status(401)
+                                    .json({ error: 'Unauthorized Access' })
                             }
                             const subscriptionId = org.subscriptionId as string
                             const customerId = org.customerId as string
-                            const features = await this.identityManager.getFeaturesByPlan(subscriptionId)
-                            const productId = await this.identityManager.getProductIdFromSubscription(subscriptionId)
+                            const features = await this.identityManager.getFeaturesByPlan(
+                                subscriptionId
+                            )
+                            const productId =
+                                await this.identityManager.getProductIdFromSubscription(
+                                    subscriptionId
+                                )
 
                             // @ts-ignore
                             req.user = {
-                                permissions: [...JSON.parse(ownerRole.permissions)],
+                                permissions: [
+                                    ...JSON.parse(ownerRole.permissions)
+                                ],
                                 features,
                                 activeOrganizationId: activeOrganizationId,
                                 activeOrganizationSubscriptionId: subscriptionId,
@@ -283,14 +321,18 @@ export class App {
                             }
                             next()
                         } else {
-                            return res.status(401).json({ error: 'Unauthorized Access' })
+                            return res
+                                .status(401)
+                                .json({ error: 'Unauthorized Access' })
                         }
                     }
                 } else {
-                    return res.status(401).json({ error: 'Unauthorized Access' })
+                    return res
+                        .status(401)
+                        .json({ error: 'Unauthorized Access' })
                 }
             } else {
-                // If the req path does not contain /api/v1, then allow the request to pass through, example: /assets, /canvas
+                // If the req path does not contain /api/v1, then allow the request to pass through
                 next()
             }
         })
@@ -312,10 +354,12 @@ export class App {
             }
             if (this.metricsProvider) {
                 await this.metricsProvider.initializeCounters()
-                logger.info(`📊 [server]: Metrics Provider [${this.metricsProvider.getName()}] has been initialized!`)
+                logger.info(
+                    `📊 [server]: Metrics Provider [${this.metricsProvider.getName()}] has been initialized!`
+                )
             } else {
                 logger.error(
-                    "❌ [server]: Metrics collection is enabled, but failed to initialize provider (valid values are 'prometheus' or 'open_telemetry'."
+                    "❌ [server]: Metrics collection is enabled, but failed to initialize provider (valid values are 'prometheus' or 'open_telemetry')."
                 )
             }
         }
@@ -328,7 +372,9 @@ export class App {
         this.app.post('/api/signup', async (req, res) => {
             const { email, password } = req.body
             if (!email || !password) {
-                return res.status(400).json({ error: 'Email and password are required.' })
+                return res
+                    .status(400)
+                    .json({ error: 'Email and password are required.' })
             }
 
             try {
@@ -370,13 +416,16 @@ export class App {
                 const newUserId = userResult.rows[0].user_id
 
                 return res.json({
-                    message: 'Signup successful. Your account is pending activation until payment completes.',
+                    message:
+                        'Signup successful. Your account is pending activation until payment completes.',
                     tenantId: newTenantId,
                     userId: newUserId
                 })
             } catch (err) {
                 console.error('Error in /api/signup:', err)
-                return res.status(500).json({ error: 'Internal server error during signup.' })
+                return res
+                    .status(500)
+                    .json({ error: 'Internal server error during signup.' })
             }
         })
 
@@ -397,8 +446,13 @@ export class App {
                         process.env.STRIPE_WEBHOOK_SECRET!
                     )
                 } catch (err: any) {
-                    console.error('⚠️  Webhook signature verification failed:', err.message)
-                    return res.status(400).send(`Webhook Error: ${err.message}`)
+                    console.error(
+                        '⚠️  Webhook signature verification failed:',
+                        err.message
+                    )
+                    return res
+                        .status(400)
+                        .send(`Webhook Error: ${err.message}`)
                 }
 
                 switch (event.type) {
@@ -411,7 +465,8 @@ export class App {
                         break
                     }
                     case 'customer.subscription.deleted': {
-                        const subscription = event.data.object as Stripe.Subscription
+                        const subscription =
+                            event.data.object as Stripe.Subscription
                         await this.db.query(
                             `UPDATE tenants SET status = 'canceled' WHERE stripe_subscription_id = $1`,
                             [subscription.id]
@@ -428,7 +483,11 @@ export class App {
         )
 
         // ─── MIDDLEWARE TO BLOCK NON-ACTIVE TENANTS ─────────────────────────────
-        async function checkTenantActive(req: Request, res: Response, next: express.NextFunction) {
+        async function checkTenantActive(
+            req: Request,
+            res: Response,
+            next: express.NextFunction
+        ) {
             // Flowise sets (req as any).session.userId upon successful login
             const userId = (req as any).session?.userId
             if (!userId) {
@@ -444,7 +503,9 @@ export class App {
                     [userId]
                 )
                 if (!rows.length || rows[0].status !== 'active') {
-                    return res.status(403).send('Your subscription is not active.')
+                    return res
+                        .status(403)
+                        .send('Your subscription is not active.')
                 }
                 next()
             } catch (err) {
@@ -469,7 +530,11 @@ export class App {
             })
         })
 
-        if (process.env.MODE === MODE.QUEUE && process.env.ENABLE_BULLMQ_DASHBOARD === 'true' && !this.identityManager.isCloud()) {
+        if (
+            process.env.MODE === MODE.QUEUE &&
+            process.env.ENABLE_BULLMQ_DASHBOARD === 'true' &&
+            !this.identityManager.isCloud()
+        ) {
             this.app.use('/admin/queues', this.queueManager.getBullBoardRouter())
         }
 
@@ -511,7 +576,8 @@ let serverApp: App | undefined
 export async function start(): Promise<void> {
     serverApp = new App()
 
-    const host = process.env.HOST
+    // Listen on all interfaces (0.0.0.0) for Render
+    const host = process.env.HOST || '0.0.0.0'
     const port = parseInt(process.env.PORT || '', 10) || 3000
     const server = http.createServer(serverApp.app)
 
@@ -519,7 +585,9 @@ export async function start(): Promise<void> {
     await serverApp.config()
 
     server.listen(port, host, () => {
-        logger.info(`⚡️ [server]: Flowise Server is listening at ${host ? 'http://' + host : ''}:${port}`)
+        logger.info(
+            `⚡️ [server]: Flowise Server is listening at http://${host}:${port}`
+        )
     })
 }
 
