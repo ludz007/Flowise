@@ -1,40 +1,52 @@
 # ─────────── STAGE 1: Build ────────────────────────────────────────────────
-FROM node:18.18.1-alpine AS builder
+FROM node:20-bullseye AS builder
 
-WORKDIR /app
+WORKDIR /usr/src
 
-# 1) Install pnpm and build tools (needed for bcrypt, etc.)
-RUN npm install -g pnpm@9 \
-    && apk add --no-cache python3 make g++ libc6-compat
+# 1) Install build tools (for bcrypt, pdfjs, etc.)
+RUN apt-get update \
+ && apt-get install -y python3 make g++ libcairo2-dev libpango1.0-dev curl \
+ && rm -rf /var/lib/apt/lists/*
 
-# 2) Copy repo manifest and source code
+# 2) Install pnpm globally
+RUN npm install -g pnpm@9
+
+# 3) Copy source files
 COPY package.json pnpm-lock.yaml ./
 COPY . .
 
-# 3) Install all dependencies and build UI + server
-RUN pnpm install --shamefully-hoist
+# 4) Install dependencies & build
+RUN pnpm install --recursive
 RUN pnpm build
 
 # ─────────── STAGE 2: Runtime ─────────────────────────────────────────────
-FROM node:18.18.1-alpine
+FROM node:20-bullseye AS runner
 
-WORKDIR /app
+WORKDIR /usr/src
 
-# 1) Copy compiled server code
-COPY --from=builder /app/packages/server/dist ./packages/server/dist
+# 1) Copy built server code
+COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
 
-# 2) Copy the built UI (if you serve static assets)
-COPY --from=builder /app/packages/ui/build ./packages/ui/build
+# 2) Copy built UI (if you serve it)
+COPY --from=builder /usr/src/packages/ui/build ./packages/ui/build
 
-# 3) Copy node_modules (so express, cors, bcrypt, etc. are available)
-COPY --from=builder /app/node_modules ./node_modules
+# 3) Copy node_modules (so express, cors, bcrypt, chromium, etc. are available)
+COPY --from=builder /usr/src/node_modules ./node_modules
 
-# 4) Ensure the server binds to 0.0.0.0 and uses PORT=3000 by default
+# 4) Install Chromium runtime dependencies
+RUN apt-get update \
+ && apt-get install -y chromium \
+ && rm -rf /var/lib/apt/lists/*
+
+# 5) Set environment so Puppeteer uses the system Chromium
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium
+
+# 6) Ensure the server binds to 0.0.0.0:3000
 ENV HOST=0.0.0.0
 ENV PORT=3000
 
-# 5) Expose port 3000 so Render’s port scanner can find it
 EXPOSE 3000
 
-# 6) Finally, explicitly call start() so Express actually listens:
+# 7) Explicitly call start() so Express actually listens on PORT
 CMD ["node", "-e", "require('./packages/server/dist/index').start()"]
