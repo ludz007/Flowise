@@ -1,38 +1,30 @@
-# ─────────── STAGE 1: Build ────────────────────────────────────────────────
-FROM node:18-bullseye AS builder
+# Use a Node version compatible with Flowise (18.18.1 as recommended)
+FROM node:18.18.1-alpine AS builder
+WORKDIR /app
 
-# Install build tools so bcrypt can compile its native bindings
-RUN apt-get update && apt-get install -y build-essential python3 make gcc g++
+# Install pnpm and build tools
+RUN npm install -g pnpm \
+    && apk add --no-cache git python3 make g++ cairo-dev pango-dev chromium
 
-WORKDIR /usr/src
-
-# Copy monorepo manifest files
-COPY package.json pnpm-lock.yaml ./
-
-# Copy entire repository
+# Copy code and install deps
 COPY . .
+RUN pnpm install
 
-# Install pnpm, dependencies, and build everything (UI + server)
-RUN npm install -g pnpm@9
-RUN pnpm install --recursive
+# Build Flowise (compiles TypeScript to JS)
 RUN pnpm build
 
-# ─────────── STAGE 2: Runtime ─────────────────────────────────────────────
-FROM node:18-bullseye
+# Final image
+FROM node:18.18.1-alpine
+WORKDIR /app
 
-WORKDIR /usr/src
+# Copy built code and node_modules from builder
+COPY --from=builder /app/packages/server /app/packages/server
+COPY --from=builder /app/node_modules /app/node_modules
 
-# 1) Copy compiled UI assets (for any static pages)
-COPY --from=builder /usr/src/packages/ui/build ./packages/ui/build
-
-# 2) Copy compiled server code
-COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
-
-# 3) Copy the entire node_modules folder so runtime has express, cors, bcrypt, etc.
-COPY --from=builder /usr/src/node_modules ./node_modules
-
-# Expose port 3000 so Render’s port scanner can detect it
+# Expose the port Flowise will listen on
+ENV HOST=0.0.0.0
+ENV PORT=3000
 EXPOSE 3000
 
-# 4) Start the Express server by explicitly calling start()
-CMD ["node", "-e", "require('./packages/server/dist/index').start()"]
+# Start Flowise server
+CMD ["node", "packages/server/dist/index.js"]
