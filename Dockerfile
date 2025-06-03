@@ -29,10 +29,9 @@ COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
 # Copy monorepo manifest files so we can install production dependencies
 COPY --from=builder /usr/src/package.json /usr/src/pnpm-lock.yaml ./
 
-# Install production-only dependencies at root (including express, bcrypt, etc.)
-# Skip any postinstall scripts (e.g. husky)
+# Install production-only dependencies for all workspaces, skipping postinstall scripts
 RUN npm install -g pnpm@9
-RUN pnpm install --prod --ignore-scripts
+RUN pnpm install --prod --recursive --ignore-scripts
 
 # Tell Docker/Render we listen on port 3000
 EXPOSE 3000
