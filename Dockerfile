@@ -1,30 +1,40 @@
-# Use a Node version compatible with Flowise (18.18.1 as recommended)
+# ─────────── STAGE 1: Build ────────────────────────────────────────────────
 FROM node:18.18.1-alpine AS builder
+
 WORKDIR /app
 
-# Install pnpm and build tools
-RUN npm install -g pnpm \
-    && apk add --no-cache git python3 make g++ cairo-dev pango-dev chromium
+# 1) Install pnpm and build tools (needed for bcrypt, etc.)
+RUN npm install -g pnpm@9 \
+    && apk add --no-cache python3 make g++ libc6-compat
 
-# Copy code and install deps
+# 2) Copy repo manifest and source code
+COPY package.json pnpm-lock.yaml ./
 COPY . .
-RUN pnpm install
 
-# Build Flowise (compiles TypeScript to JS)
+# 3) Install all dependencies and build UI + server
+RUN pnpm install --shamefully-hoist
 RUN pnpm build
 
-# Final image
+# ─────────── STAGE 2: Runtime ─────────────────────────────────────────────
 FROM node:18.18.1-alpine
+
 WORKDIR /app
 
-# Copy built code and node_modules from builder
-COPY --from=builder /app/packages/server /app/packages/server
-COPY --from=builder /app/node_modules /app/node_modules
+# 1) Copy compiled server code
+COPY --from=builder /app/packages/server/dist ./packages/server/dist
 
-# Expose the port Flowise will listen on
+# 2) Copy the built UI (if you serve static assets)
+COPY --from=builder /app/packages/ui/build ./packages/ui/build
+
+# 3) Copy node_modules (so express, cors, bcrypt, etc. are available)
+COPY --from=builder /app/node_modules ./node_modules
+
+# 4) Ensure the server binds to 0.0.0.0 and uses PORT=3000 by default
 ENV HOST=0.0.0.0
 ENV PORT=3000
+
+# 5) Expose port 3000 so Render’s port scanner can find it
 EXPOSE 3000
 
-# Start Flowise server
-CMD ["node", "packages/server/dist/index.js"]
+# 6) Finally, explicitly call start() so Express actually listens:
+CMD ["node", "-e", "require('./packages/server/dist/index').start()"]
