@@ -26,14 +26,11 @@ WORKDIR /usr/src
 COPY --from=builder /usr/src/packages/ui/build ./packages/ui/build
 COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
 
-# Copy the hoisted node_modules so runtime has express, cors, etc.
+# Copy node_modules so Express and other deps are available
 COPY --from=builder /usr/src/node_modules ./node_modules
-
-# Copy package.json (optional, for clarity)
-COPY --from=builder /usr/src/package.json ./package.json
 
 # Expose port 3000 for Render
 EXPOSE 3000
 
-# Start the compiled Express server
-CMD ["node", "packages/server/dist/index.js"]
+# Start the compiled Express server by invoking its exported start() function
+CMD ["node", "-e", "require('./packages/server/dist/index').start()"]
