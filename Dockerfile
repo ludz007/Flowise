@@ -9,10 +9,10 @@ WORKDIR /usr/src
 # Copy monorepo manifest files
 COPY package.json pnpm-lock.yaml ./
 
-# Copy everything else
+# Copy entire repo
 COPY . .
 
-# Install pnpm, dependencies, and build all packages
+# Install pnpm, all dependencies, and build everything
 RUN npm install -g pnpm@9
 RUN pnpm install --recursive
 RUN pnpm build
@@ -22,19 +22,18 @@ FROM node:18-bullseye
 
 WORKDIR /usr/src
 
-# Copy built UI and server code from builder stage
+# Copy built UI and server code from builder
 COPY --from=builder /usr/src/packages/ui/build ./packages/ui/build
 COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
 
-# Copy monorepo manifest files so we can install production dependencies
-COPY --from=builder /usr/src/package.json /usr/src/pnpm-lock.yaml ./
+# Copy the hoisted node_modules so runtime has express, cors, etc.
+COPY --from=builder /usr/src/node_modules ./node_modules
 
-# Install production-only dependencies for all workspaces, skipping postinstall scripts
-RUN npm install -g pnpm@9
-RUN pnpm install --prod --recursive --ignore-scripts
+# Copy package.json (optional, for clarity)
+COPY --from=builder /usr/src/package.json ./package.json
 
-# Tell Docker/Render we listen on port 3000
+# Expose port 3000 for Render
 EXPOSE 3000
 
-# Start the Express server directly
+# Start the compiled Express server
 CMD ["node", "packages/server/dist/index.js"]
