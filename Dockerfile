@@ -29,9 +29,9 @@ COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
 # Copy package.json + pnpm-lock to install production dependencies
 COPY --from=builder /usr/src/package.json /usr/src/pnpm-lock.yaml ./
 
-# Install production-only dependencies
+# Install production-only dependencies, skipping postinstall scripts (e.g. husky)
 RUN npm install -g pnpm@9
-RUN pnpm install --prod
+RUN pnpm install --prod --ignore-scripts
 
 # Tell Docker/Render we listen on port 3000
 EXPOSE 3000
