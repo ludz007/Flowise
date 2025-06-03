@@ -26,12 +26,12 @@ WORKDIR /usr/src
 COPY --from=builder /usr/src/packages/ui/build ./packages/ui/build
 COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
 
-# Copy package.json + pnpm-lock to install production deps
+# Copy package.json + pnpm-lock to install production dependencies
 COPY --from=builder /usr/src/package.json /usr/src/pnpm-lock.yaml ./
 
-# Install production-only dependencies for the server
+# Install production-only dependencies
 RUN npm install -g pnpm@9
-RUN pnpm install --prod --filter ./packages/server
+RUN pnpm install --prod
 
 # Tell Docker/Render we listen on port 3000
 EXPOSE 3000
