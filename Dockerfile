@@ -26,12 +26,13 @@ WORKDIR /usr/src
 COPY --from=builder /usr/src/packages/ui/build ./packages/ui/build
 COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
 
-# Copy package.json + pnpm-lock to install production dependencies
+# Copy monorepo manifest files and server-specific package.json
 COPY --from=builder /usr/src/package.json /usr/src/pnpm-lock.yaml ./
+COPY --from=builder /usr/src/packages/server/package.json ./packages/server/package.json
 
-# Install production-only dependencies, skipping postinstall scripts (e.g. husky)
+# Install production-only dependencies for the server workspace
 RUN npm install -g pnpm@9
-RUN pnpm install --prod --ignore-scripts
+RUN pnpm install --prod --filter ./packages/server --ignore-scripts
 
 # Tell Docker/Render we listen on port 3000
 EXPOSE 3000
