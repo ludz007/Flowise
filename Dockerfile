@@ -1,38 +1,40 @@
-# Build local monorepo image
-# docker build --no-cache -t  flowise .
+# ─────────── STAGE 1: Build ────────────────────────────────────────────────
+FROM node:18-bullseye AS builder
 
-# Run image
-# docker run -d -p 3000:3000 flowise
-
-FROM node:20-alpine
-RUN apk add --update libc6-compat python3 make g++
-# needed for pdfjs-dist
-RUN apk add --no-cache build-base cairo-dev pango-dev
-
-# Install Chromium
-RUN apk add --no-cache chromium
-
-# Install curl for container-level health checks
-# Fixes: https://github.com/FlowiseAI/Flowise/issues/4126
-RUN apk add --no-cache curl
-
-#install PNPM globaly
-RUN npm install -g pnpm
-
-ENV PUPPETEER_SKIP_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/chromium-browser
-
-ENV NODE_OPTIONS=--max-old-space-size=8192
+# Install build tools so bcrypt can compile
+RUN apt-get update && apt-get install -y build-essential python3 make gcc g++
 
 WORKDIR /usr/src
 
-# Copy app source
+# Copy monorepo manifest files
+COPY package.json pnpm-lock.yaml ./
+
+# Copy everything else
 COPY . .
 
-RUN pnpm install
-
+# Install pnpm, dependencies, and build all packages
+RUN npm install -g pnpm@9
+RUN pnpm install --recursive
 RUN pnpm build
 
+# ─────────── STAGE 2: Runtime ─────────────────────────────────────────────
+FROM node:18-bullseye
+
+WORKDIR /usr/src
+
+# Copy built UI and server code from builder stage
+COPY --from=builder /usr/src/packages/ui/build ./packages/ui/build
+COPY --from=builder /usr/src/packages/server/dist ./packages/server/dist
+
+# Copy package.json + pnpm-lock to install production deps
+COPY --from=builder /usr/src/package.json /usr/src/pnpm-lock.yaml ./
+
+# Install production-only dependencies for the server
+RUN npm install -g pnpm@9
+RUN pnpm install --prod --filter ./packages/server
+
+# Tell Docker/Render we listen on port 3000
 EXPOSE 3000
 
-CMD [ "pnpm", "start" ]
+# Start the Express server directly
+CMD ["node", "packages/server/dist/index.js"]
